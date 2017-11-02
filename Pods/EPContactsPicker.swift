@@ -15,6 +15,9 @@ public protocol EPPickerDelegate: class {
     func epContactPicker(_: EPContactsPicker, didCancel error: NSError)
     func epContactPicker(_: EPContactsPicker, didSelectContact contact: EPContact)
 	func epContactPicker(_: EPContactsPicker, didSelectMultipleContacts contacts: [EPContact])
+  
+  func sendButton(enabled: Bool)
+  func presentAlert()
 }
 
 public extension EPPickerDelegate {
@@ -22,6 +25,9 @@ public extension EPPickerDelegate {
 	func epContactPicker(_: EPContactsPicker, didCancel error: NSError) { }
 	func epContactPicker(_: EPContactsPicker, didSelectContact contact: EPContact) { }
 	func epContactPicker(_: EPContactsPicker, didSelectMultipleContacts contacts: [EPContact]) { }
+  
+  func sendButton(enabled: Bool) { }
+  func presentAlert() { }
 }
 
 typealias ContactsHandler = (_ contacts : [CNContact] , _ error : NSError?) -> Void
@@ -45,6 +51,7 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
     
     var selectedContacts = [EPContact]()
     var filteredContacts = [CNContact]()
+    var multiSelectContactLimit : UInt = 0
     
     var subtitleCellValue = SubtitleCellValue.phoneNumber
     var multiSelectEnabled: Bool = false //Default is single selection contact
@@ -54,7 +61,13 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
     override open func viewDidLoad() {
         super.viewDidLoad()
         self.title = EPGlobalConstants.Strings.contactsTitle
-
+        self.view.backgroundColor = UIColor.clear
+        let bgView = UIView()
+        bgView.backgroundColor = UIColor.clear
+        self.tableView.backgroundView = bgView
+        self.tableView.backgroundColor = UIColor.clear
+        self.tableView.sectionIndexColor = UIColor.white
+        self.tableView.sectionIndexBackgroundColor = UIColor.clear
         registerContactCell()
         inititlizeBarButtons()
         initializeSearchBar()
@@ -64,12 +77,14 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
     func initializeSearchBar() {
         self.resultSearchController = ( {
             let controller = UISearchController(searchResultsController: nil)
+            controller.searchBar.barStyle = UIBarStyle.black
             controller.searchResultsUpdater = self
             controller.dimsBackgroundDuringPresentation = false
             controller.hidesNavigationBarDuringPresentation = false
             controller.searchBar.sizeToFit()
             controller.searchBar.delegate = self
             self.tableView.tableHeaderView = controller.searchBar
+          
             return controller
         })()
     }
@@ -129,6 +144,16 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
         contactDelegate = delegate
         subtitleCellValue = subtitleCellType
     }
+  
+  convenience public init(delegate: EPPickerDelegate?, multiSelection: Bool, subtitleCellType: SubtitleCellValue, multiSelectContactLimit: UInt) {
+    self.init(delegate: delegate, multiSelection: multiSelection, subtitleCellType: subtitleCellType)
+    self.multiSelectContactLimit = multiSelectContactLimit
+  }
+  
+  convenience public init(delegate: EPPickerDelegate?, multiSelection: Bool, multiSelectionContactLimit: UInt) {
+    self.init(delegate: delegate, multiSelection: multiSelection)
+    self.multiSelectContactLimit = multiSelectionContactLimit
+  }
     
     
     // MARK: - Contact Operations
@@ -153,19 +178,7 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
         switch CNContactStore.authorizationStatus(for: CNEntityType.contacts) {
             case CNAuthorizationStatus.denied, CNAuthorizationStatus.restricted:
                 //User has denied the current app to access the contacts.
-                
-                let productName = Bundle.main.infoDictionary!["CFBundleName"]!
-                
-                let alert = UIAlertController(title: "Unable to access contacts", message: "\(productName) does not have access to contacts. Kindly enable it in privacy settings ", preferredStyle: UIAlertControllerStyle.alert)
-                let okAction = UIAlertAction(title: "Ok", style: UIAlertActionStyle.default, handler: {  action in
-                    completion([], error)
-                    self.dismiss(animated: true, completion: {
-                        self.contactDelegate?.epContactPicker(self, didContactFetchFailed: error)
-                    })
-                })
-                alert.addAction(okAction)
-                self.present(alert, animated: true, completion: nil)
-            
+                self.contactDelegate?.presentAlert()
             case CNAuthorizationStatus.notDetermined:
                 //This case means the user is prompted for the first time for allowing contacts
                 contactsStore?.requestAccess(for: CNEntityType.contacts, completionHandler: { (granted, error) -> Void in
@@ -183,6 +196,10 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
             case  CNAuthorizationStatus.authorized:
                 //Authorization granted by user for this app.
                 var contactsArray = [CNContact]()
+                let addContact = CNMutableContact()
+                addContact.givenName = "+ Add phone number"
+                contactsArray.insert(addContact, at: 0)
+                
                 
                 let contactFetchRequest = CNContactFetchRequest(keysToFetch: allowedContactKeys())
                 
@@ -209,6 +226,10 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
                         self.sortedContactKeys.removeFirst()
                         self.sortedContactKeys.append("#")
                     }
+                  
+                  let key = self.sortedContactKeys.first
+                  self.orderedContacts[key!]?.insert(addContact, at: 0)
+                  
                     completion(contactsArray, nil)
                 }
                 //Catching exception as enumerateContactsWithFetchRequest can throw errors
@@ -233,6 +254,70 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
             CNContactEmailAddressesKey as CNKeyDescriptor,
         ]
     }
+  
+  func newContact() {
+    let alertController = UIAlertController(title: "Add Contact", message: "", preferredStyle: .alert)
+    
+    let cancelAction = UIAlertAction(title: "Cancel", style: .default, handler: { _ in
+      alertController.dismiss(animated: true, completion: nil)
+    })
+    
+    alertController.addAction(cancelAction)
+    
+    let action = UIAlertAction(title: "Add", style: .default, handler: { alert -> Void in
+      let fNameField = (alertController.textFields![0] as UITextField).text ?? ""
+      let lNameField = (alertController.textFields![1] as UITextField).text ?? ""
+      let phoneField = (alertController.textFields![2] as UITextField).text ?? ""
+      
+      if (fNameField != "" || lNameField != "") && phoneField != "" {
+        // create a new contact
+        let contact = CNMutableContact()
+        contact.givenName = fNameField
+        contact.familyName = lNameField
+        let phoneNumber = CNLabeledValue(label: CNLabelPhoneNumberiPhone,
+                                         value: CNPhoneNumber(stringValue: phoneField))
+        contact.phoneNumbers.append(phoneNumber)
+        
+        let key = self.sortedContactKeys.first
+        self.orderedContacts[key!]?.insert(contact, at: 1)
+        self.tableView.reloadData()
+        let indexPath = IndexPath(item: 1, section: 0)
+        self.tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none)
+        self.tableView.delegate?.tableView!(self.tableView, didSelectRowAt: indexPath)
+      } else {
+        let errorAlert = UIAlertController(title: "Error", message: "Please input name AND phone number", preferredStyle: .alert)
+        errorAlert.addAction(UIAlertAction(title: "OK", style: .cancel, handler: { alert -> Void in
+          self.present(alertController, animated: true, completion: nil)
+        }))
+        self.present(errorAlert, animated: true, completion: nil)
+      }
+    })
+    
+    alertController.addAction(action)
+    
+    alertController.addTextField(configurationHandler: { (textField) -> Void in
+      textField.placeholder = "First Name"
+      textField.textAlignment = .center
+      textField.autocapitalizationType = .words
+      textField.borderStyle = .roundedRect
+    })
+    
+    alertController.addTextField(configurationHandler: { (textField) -> Void in
+      textField.placeholder = "Last Name"
+      textField.textAlignment = .center
+      textField.autocapitalizationType = .words
+      textField.borderStyle = .roundedRect
+    })
+    
+    alertController.addTextField(configurationHandler: { (textField) -> Void in
+      textField.placeholder = "Phone Number"
+      textField.textAlignment = .center
+      textField.keyboardType = .decimalPad
+      textField.borderStyle = .roundedRect
+    })
+    
+    self.present(alertController, animated: true, completion: nil)
+  }
     
     // MARK: - Table View DataSource
     
@@ -270,6 +355,7 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
 		
         if multiSelectEnabled  && selectedContacts.contains(where: { $0.contactId == contact.contactId }) {
             cell.accessoryType = UITableViewCellAccessoryType.checkmark
+          cell.tintColor = EPGlobalConstants.Colors.nxYellow
         }
 		
         cell.updateContactsinUI(contact, indexPath: indexPath, subtitleType: subtitleCellValue)
@@ -277,9 +363,14 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
     }
     
     override open func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        
         let cell = tableView.cellForRow(at: indexPath) as! EPContactCell
         let selectedContact =  cell.contact!
+      if selectedContact.firstName == "+ Add phone number" {
+        // add new contact
+        newContact()
+        return
+      }
+      
         if multiSelectEnabled {
             //Keeps track of enable=ing and disabling contacts
             if cell.accessoryType == UITableViewCellAccessoryType.checkmark {
@@ -288,10 +379,14 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
                     return selectedContact.contactId != $0.contactId
                 }
             }
-            else {
+            else if (self.multiSelectContactLimit == 0 || self.selectedContacts.count < Int(self.multiSelectContactLimit)) {
                 cell.accessoryType = UITableViewCellAccessoryType.checkmark
+                cell.tintColor = EPGlobalConstants.Colors.nxYellow
                 selectedContacts.append(selectedContact)
             }
+          
+          self.contactDelegate?.sendButton(enabled: self.multiSelectContactLimit == 0 ||
+            self.selectedContacts.count == self.multiSelectContactLimit)
         }
         else {
             //Single selection code
@@ -318,12 +413,7 @@ open class EPContactsPicker: UITableViewController, UISearchResultsUpdating, UIS
         if resultSearchController.isActive { return nil }
         return sortedContactKeys
     }
-
-    override open func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        if resultSearchController.isActive { return nil }
-        return sortedContactKeys[section]
-    }
-    
+  
     // MARK: - Button Actions
     
     func onTouchCancelButton() {
